@@ -12,21 +12,57 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+import logging
+
 from fuel_health import cloudvalidation
+
+LOG = logging.getLogger(__name__)
 
 
 class NTPTest(cloudvalidation.CloudValidationTest):
     """Cloud Validation Test class for NTP."""
 
-    def _check_ntp(self, host, step, kind='unknown'):
-        """Checks NTP on host."""
+    def _verify_ntp_config(self, host, step):
+        """Checks if there's at least one time server in ntp.conf."""
 
-        err_msg = 'NTP is not configured on {kind} node {host}'.format(
-                  kind=kind,
+        err_msg = 'There is no time servers in ntp.conf at {host}'.format(
                   host=host)
 
-        result = False
-        for cmd in("ip netns exec vrouter ntpq -np", "ntpq -np"):
+        cmd = 'grep "^\s*server" /etc/ntp.conf'
+        err_grep_msg = 'Cannot read ntp.conf at {host}'.format(host=host)
+
+        out, err = self.verify(5,
+                               self._run_ssh_cmd,
+                               step,
+                               err_grep_msg,
+                               'check ntp.conf',
+                               host,
+                               cmd)
+        LOG.debug('OUT: '+out)
+        result = bool(out)
+
+        self.verify_response_true(result, err_msg, step)
+
+    def _check_ntp(self, host, step, kind="unknown"):
+        """Checks NTP on host."""
+
+        self._verify_ntp_config(host, step)
+
+        err_msg = 'An error occured while checking NTP at {host}'.format(
+                  host=host)
+
+        cmd = "ip netns exec vrouter ntpq -np"
+        out, err = self.verify(5,
+                               self._run_ssh_cmd,
+                               step,
+                               err_msg,
+                               'check NTP',
+                               host,
+                               cmd)
+
+        if u'Cannot open network namespace' in err:
+
+            cmd = "ntpq -np"
             out, err = self.verify(5,
                                    self._run_ssh_cmd,
                                    step,
@@ -35,14 +71,19 @@ class NTPTest(cloudvalidation.CloudValidationTest):
                                    host,
                                    cmd)
 
-            result = result or (u'Connection refused' not in err and
-                                u'Connection refused' not in out and
-                                u'Cannot open network namespace' not in err and
-                                u'Cannot open network namespace' not in out and
-                                u'No association ID' not in err and
-                                u'No association ID' not in out)
+            checks = [(u'Connection refused',
+                       u'No connection to server at {host}'.format(host=host)),
+                      (u'No association ID',
+                       u'No association ID found at {host}'.format(host=host))
+                      ]
 
-        self.verify_response_true(result, err_msg, step)
+            fn_check = lambda out, err, text: (text not in out and
+                                               text not in err)
+
+            for check in checks:
+                self.verify_response_true(fn_check(out, err, check[0]),
+                                          check[1],
+                                          step)
 
     def test_ntp_on_nodes(self):
         """Check: NTP on controller and compute nodes
@@ -54,7 +95,7 @@ class NTPTest(cloudvalidation.CloudValidationTest):
 
         Duration: 15 s.
 
-        Available since release: 2014.2-6.1
+        Available since release: 2015.1.0-7.0
         """
 
         for host in self.controllers:
