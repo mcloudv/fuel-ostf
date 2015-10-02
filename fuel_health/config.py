@@ -45,12 +45,6 @@ IdentityGroup = [
     cfg.StrOpt('uri',
                default='http://localhost/',
                help="Full URI of the OpenStack Identity API (Keystone), v2"),
-    cfg.StrOpt('url',
-               default='http://localhost:5000/v2.0/',
-               help="Dashboard Openstack url, v2"),
-    cfg.StrOpt('ubuntu_url',
-               default='http://localhost:5000/v2.0/',
-               help="Dashboard Openstack url, v2"),
     cfg.StrOpt('uri_v3',
                help='Full URI of the OpenStack Identity API (Keystone), v3'),
     cfg.StrOpt('strategy',
@@ -80,6 +74,32 @@ def register_identity_opts(conf):
     for opt in IdentityGroup:
         conf.register_opt(opt, group='identity')
 
+master_node_group = cfg.OptGroup(name='master',
+                                 title='Master Node Options')
+
+MasterGroup = [
+    cfg.StrOpt('keystone_password',
+               default='admin',
+               help='Default keystone password on master node'),
+    cfg.StrOpt('keystone_user',
+               default='admin',
+               help='Default keystone user on master node'),
+    cfg.StrOpt('master_node_ssh_user',
+               default='root'),
+    cfg.StrOpt('master_node_ssh_password',
+               default='r00tme',
+               help='ssh user pass of master node'),
+    cfg.IntOpt('ssh_timeout',
+               default=50,
+               help="Timeout in seconds to wait for authentication to "
+                    "succeed."),
+]
+
+
+def register_master_opts(conf):
+    conf.register_group(master_node_group)
+    for opt in MasterGroup:
+        conf.register_opt(opt, group='master')
 
 compute_group = cfg.OptGroup(name='compute',
                              title='Compute Service Options')
@@ -142,9 +162,15 @@ ComputeGroup = [
     cfg.ListOpt('controller_nodes',
                 default=[],
                 help="IP addresses of controller nodes"),
+    cfg.ListOpt('controller_names',
+                default=[],
+                help="FQDNs of controller nodes"),
     cfg.ListOpt('online_controllers',
                 default=[],
                 help="ips of online controller nodes"),
+    cfg.ListOpt('online_controller_names',
+                default=[],
+                help="FQDNs of online controller nodes"),
     cfg.ListOpt('compute_nodes',
                 default=[],
                 help="IP addresses of compute nodes"),
@@ -325,7 +351,7 @@ SaharaConfig = [
     cfg.StrOpt('plugin',
                default='vanilla',
                help="Plugin name of sahara service."),
-    cfg.StrOpt('pligin_version',
+    cfg.StrOpt('plugin_version',
                default='1.1.2',
                help="Plugin version of sahara service."),
     cfg.StrOpt('tt_config',
@@ -388,6 +414,9 @@ FuelConf = [
     cfg.StrOpt('dns',
                default=None,
                help="dns"),
+    cfg.BoolOpt('horizon_ssl',
+                default=False,
+                help='ssl usage')
 ]
 
 
@@ -460,6 +489,7 @@ class FileConfig(object):
         register_compute_opts(cfg.CONF)
         register_identity_opts(cfg.CONF)
         register_network_opts(cfg.CONF)
+        register_master_opts(cfg.CONF)
         register_volume_opts(cfg.CONF)
         register_murano_opts(cfg.CONF)
         register_heat_opts(cfg.CONF)
@@ -468,6 +498,7 @@ class FileConfig(object):
         self.compute = cfg.CONF.compute
         self.identity = cfg.CONF.identity
         self.network = cfg.CONF.network
+        self.master = cfg.CONF.master
         self.volume = cfg.CONF.volume
         self.murano = cfg.CONF.murano
         self.heat = cfg.CONF.heat
@@ -507,6 +538,7 @@ class NailgunConfig(object):
     identity = ConfigGroup(IdentityGroup)
     compute = ConfigGroup(ComputeGroup)
     image = ConfigGroup(ImageGroup)
+    master = ConfigGroup(MasterGroup)
     network = ConfigGroup(NetworkGroup)
     volume = ConfigGroup(VolumeGroup)
     object_storage = ConfigGroup(ObjectStoreConfig)
@@ -600,6 +632,10 @@ class NailgunConfig(object):
             storage = data['editable']['storage']['volumes_ceph']['value']
             self.volume.ceph_exist = storage
         self.fuel.dns = data['editable']['external_dns'].get('value', None)
+        ssl_data = data['editable'].get('public_ssl',
+                                        {'horizon': {'value': False}})
+
+        self.fuel.horizon_ssl = ssl_data['horizon']['value']
 
     def _parse_nodes_cluster_id(self):
         api_url = '/api/nodes?cluster_id=%s' % self.cluster_id
@@ -619,25 +655,30 @@ class NailgunConfig(object):
         cinder_vmware_nodes = filter(lambda node: 'cinder-vmware' in
                                      node['roles'], data)
         controller_ips = []
-        conntroller_names = []
+        controller_names = []
         public_ips = []
         online_controllers_ips = []
+        online_controller_names = []
         for node in controller_nodes:
             public_network = next(network for network in node['network_data']
                                   if network['name'] == 'public')
             ip = public_network['ip'].split('/')[0]
             public_ips.append(ip)
             controller_ips.append(node['ip'])
-            conntroller_names.append(node['fqdn'])
-        LOG.info("IP %s NAMES %s" % (controller_ips, conntroller_names))
+            controller_names.append(node['fqdn'])
+        LOG.info("IP %s NAMES %s" % (controller_ips, controller_names))
 
         for node in online_controllers:
             online_controllers_ips.append(node['ip'])
+            online_controller_names.append(node['fqdn'])
         LOG.info("Online controllers ips is %s" % online_controllers_ips)
 
+        self.compute.nodes = data
         self.compute.public_ips = public_ips
         self.compute.controller_nodes = controller_ips
+        self.compute.controller_names = controller_names
         self.compute.online_controllers = online_controllers_ips
+        self.compute.online_controller_names = online_controller_names
         if not cinder_nodes:
             self.volume.cinder_node_exist = False
         if not cinder_vmware_nodes:
@@ -673,6 +714,8 @@ class NailgunConfig(object):
             self.nailgun_url + '/api/releases/{0}'.format(release_id)).json()
         self.compute.deployment_os = release_data.get(
             'operating_system', 'failed to get os')
+        self.compute.release_version = release_data.get(
+            'version', 'failed to get release version')
 
     def _parse_networks_configuration(self):
         api_url = '/api/clusters/{0}/network_configuration/{1}'.format(
@@ -706,10 +749,12 @@ class NailgunConfig(object):
 
     def find_proxy(self, ip):
 
-        endpoint = self.network.raw_data.get(
-            'public_vip', None) or ip
+        if 'service_endpoint' in self.network.raw_data:
+            keystone_vip = self.network.raw_data['service_endpoint']
+        else:
+            keystone_vip = self.network.raw_data.get('management_vip', None)
 
-        auth_url = 'http://{0}:{1}/{2}/'.format(endpoint, 5000, 'v2.0')
+        auth_url = 'http://{0}:{1}/{2}/'.format(keystone_vip, 5000, 'v2.0')
 
         try:
             os.environ['http_proxy'] = 'http://{0}:{1}'.format(ip, 8888)
@@ -742,15 +787,25 @@ class NailgunConfig(object):
         os.environ['http_proxy'] = 'http://{0}:{1}'.format(proxies[0], 8888)
 
     def set_endpoints(self):
+        # NOTE(dshulyak) this is hacky convention to allow granular deployment
+        # of keystone
+        if 'service_endpoint' in self.network.raw_data:
+            keystone_vip = self.network.raw_data['service_endpoint']
+            management_vip = self.network.raw_data.get('management_vip', None)
+        else:
+            management_vip = self.network.raw_data.get('management_vip', None)
+            keystone_vip = management_vip
         public_vip = self.network.raw_data.get('public_vip', None)
-        # workaround for api without public_vip for ha mode
-        if not public_vip and 'ha' in self.mode:
+        # workaround for api without management_vip for ha mode
+        if not keystone_vip and 'ha' in self.mode:
             self._parse_ostf_api()
         else:
-            endpoint = public_vip or self.compute.public_ips[0]
-            endpoint_mur_sav = public_vip or self.compute.controller_nodes[0]
-            self.identity.url = 'http://{0}/{1}/'.format(endpoint, 'dashboard')
-            self.identity.ubuntu_url = 'http://{0}/'.format(endpoint)
+            endpoint = keystone_vip or self.compute.public_ips[0]
+            endpoint_mur_sav = management_vip \
+                or self.compute.controller_nodes[0]
+            self.horizon_url = 'http://{0}/{1}/'.format(
+                public_vip, 'dashboard')
+            self.horizon_ubuntu_url = 'http://{0}/'.format(public_vip)
             self.identity.uri = 'http://{0}:{1}/{2}/'.format(
                 endpoint, 5000, 'v2.0')
             self.murano.api_url = 'http://{0}:{1}'.format(

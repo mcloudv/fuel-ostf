@@ -20,6 +20,8 @@ import socket
 import time
 import traceback
 
+import fuel_health.common.utils.data_utils as data_utils
+
 LOG = logging.getLogger(__name__)
 
 # Default client libs
@@ -134,8 +136,7 @@ class OfficialClientManager(fuel_health.manager.Manager):
                    "tenant_name: {tenant_name}").format(
                        username=username,
                        password=password,
-                       tenant_name=tenant_name,
-                   )
+                       tenant_name=tenant_name, )
             raise exceptions.InvalidConfiguration(msg)
 
         auth_url = self.config.identity.uri
@@ -149,7 +150,8 @@ class OfficialClientManager(fuel_health.manager.Manager):
                                         *client_args,
                                         service_type=service_type,
                                         no_cache=True,
-                                        insecure=dscv)
+                                        insecure=dscv,
+                                        endpoint_type='internalURL')
 
     def _get_glance_client(self, version=2, username=None, password=None,
                            tenant_name=None):
@@ -164,7 +166,7 @@ class OfficialClientManager(fuel_health.manager.Manager):
         try:
             endpoint = keystone.service_catalog.url_for(
                 service_type='image',
-                endpoint_type='publicURL')
+                endpoint_type='internalURL')
         except keystoneclient.exceptions.EndpointNotFound:
             LOG.warning('Can not initialize glance client')
             return None
@@ -185,7 +187,8 @@ class OfficialClientManager(fuel_health.manager.Manager):
                                           username,
                                           password,
                                           tenant_name,
-                                          auth_url)
+                                          auth_url,
+                                          endpoint_type='internalURL')
 
     def _get_identity_client(self, username=None, password=None,
                              tenant_name=None, version=None):
@@ -202,8 +205,7 @@ class OfficialClientManager(fuel_health.manager.Manager):
                    "tenant_name: {tenant_name}").format(
                        username=username,
                        password=password,
-                       tenant_name=tenant_name,
-                   )
+                       tenant_name=tenant_name, )
             raise exceptions.InvalidConfiguration(msg)
 
         auth_url = self.config.identity.uri
@@ -237,19 +239,20 @@ class OfficialClientManager(fuel_health.manager.Manager):
             password = self.config.identity.admin_password
         if not tenant_name:
             tenant_name = self.config.identity.admin_tenant_name
-
+        dscv = self.config.identity.disable_ssl_certificate_validation
         keystone = self._get_identity_client(username, password, tenant_name)
         token = keystone.auth_token
         try:
-            endpoint = self.config.heat.endpoint + "/" + keystone.tenant_id
+            endpoint = keystone.service_catalog.url_for(
+                service_type='orchestration',
+                endpoint_type='internalURL')
         except keystoneclient.exceptions.EndpointNotFound:
             LOG.warning('Can not initialize heat client, endpoint not found')
             return None
         else:
-            return heatclient.v1.client.Client(endpoint,
+            return heatclient.v1.client.Client(endpoint=endpoint,
                                                token=token,
-                                               username=username,
-                                               password=password)
+                                               insecure=dscv)
 
     def _get_murano_client(self):
         """This method returns Murano API client
@@ -264,7 +267,8 @@ class OfficialClientManager(fuel_health.manager.Manager):
             return muranoclient.v1.client.Client(
                 endpoint=self.config.murano.api_url,
                 token=self.token_id,
-                insecure=self.config.murano.insecure)
+                insecure=self.config.murano.insecure,
+                endpoint_type='internalURL')
         except exceptions:
             LOG.debug(traceback.format_exc())
             LOG.warning('Can not initialize murano client')
@@ -275,7 +279,7 @@ class OfficialClientManager(fuel_health.manager.Manager):
         keystone = self._get_identity_client()
         try:
             sahara_url = keystone.service_catalog.url_for(
-                service_type='data_processing', endpoint_type='publicURL')
+                service_type='data_processing', endpoint_type='internalURL')
         except keystoneclient.exceptions.EndpointNotFound:
             LOG.warning('Endpoint for Sahara service '
                         'not found. Sahara client cannot be initialized.')
@@ -291,7 +295,7 @@ class OfficialClientManager(fuel_health.manager.Manager):
         try:
             endpoint = keystone.service_catalog.url_for(
                 service_type='metering',
-                endpoint_type='publicURL')
+                endpoint_type='internalURL')
         except keystoneclient.exceptions.EndpointNotFound:
             LOG.warning('Can not initialize ceilometer client')
             return None
@@ -305,7 +309,7 @@ class OfficialClientManager(fuel_health.manager.Manager):
         try:
             endpoint = keystone.service_catalog.url_for(
                 service_type='network',
-                endpoint_type='publicURL')
+                endpoint_type='internalURL')
         except keystoneclient.exceptions.EndpointNotFound:
             LOG.warning('Can not initialize neutron client')
             return None
@@ -391,15 +395,31 @@ class OfficialClientTest(fuel_health.test.TestCase):
         for i in range(retries):
             try:
                 result = method(*args, **kwargs)
-                LOG.debug("Command execution successful.")
-                return result
+                LOG.debug("Command execution successful. "
+                          "Result {0}".format(result))
+                if 'False' in result:
+                    raise exceptions.SSHExecCommandFailed(
+                        'Command {0} finishes with False'.format(
+                            kwargs.get('command')))
+                else:
+                    return result
             except Exception as exc:
                 LOG.debug(traceback.format_exc())
                 LOG.debug("%s. Another"
                           " effort needed." % exc)
                 time.sleep(timeout)
-
+        if 'ping' not in kwargs.get('command'):
+            self.fail('Execution command on Instance fails '
+                      'with unexpected result. ')
         self.fail("Instance is not reachable by IP.")
+
+    def get_availability_zone(self, image_id=None):
+        disk = self.glance_client_v1.images.get(image_id).disk_format
+        if disk == 'vmdk':
+            az_name = 'vcenter'
+        else:
+            az_name = 'nova'
+        return az_name
 
     def check_clients_state(self):
         if not self.manager.clients_initialized:
@@ -609,12 +629,15 @@ class NovaNetworkScenarioTest(OfficialClientTest):
 
     def _create_server(self, client, name, security_groups=None,
                        flavor_id=None, net_id=None, img_name=None,
-                       data_file=None):
+                       data_file=None, az_name=None):
 
         if img_name:
             base_image_id = self.get_image_from_name(img_name=img_name)
         else:
             base_image_id = self.get_image_from_name()
+
+        if not az_name:
+            az_name = self.get_availability_zone(image_id=base_image_id)
 
         if not flavor_id:
             if not self.find_micro_flavor():
@@ -639,7 +662,7 @@ class NovaNetworkScenarioTest(OfficialClientTest):
                 create_kwargs = {'nics': [{'net-id': network[0]}],
                                  'security_groups': security_groups}
             else:
-                self.fail("Default private network '{0}' isn't present."
+                self.fail("Default private network '{0}' isn't present. "
                           "Please verify it is properly created.".
                           format(self.private_net))
         else:
@@ -647,6 +670,7 @@ class NovaNetworkScenarioTest(OfficialClientTest):
 
         server = client.servers.create(name, base_image_id,
                                        flavor_id, files=data_file,
+                                       availability_zone=az_name,
                                        **create_kwargs)
         self.verify_response_body_content(server.name,
                                           name,
@@ -780,6 +804,7 @@ class NovaNetworkScenarioTest(OfficialClientTest):
                                 self.usr, self.pwd,
                                 key_filename=self.key,
                                 timeout=timeout)
+                LOG.debug('Host is {0}'.format(host))
 
             except Exception:
                 LOG.debug(traceback.format_exc())
@@ -792,6 +817,7 @@ class NovaNetworkScenarioTest(OfficialClientTest):
                                       vm=ip_address)
 
         # TODO(???) Allow configuration of execution and sleep duration.
+
         return fuel_health.test.call_until_true(run_cmd, 40, 1)
 
     def _check_vm_connectivity(self, ip_address, timeout, retries):
@@ -853,46 +879,6 @@ class NovaNetworkScenarioTest(OfficialClientTest):
 
 class PlatformServicesBaseClass(NovaNetworkScenarioTest):
 
-    def setUp(self):
-        super(PlatformServicesBaseClass, self).setUp()
-
-        self.neutron_private_net_id = None
-        self.floating_ip_pool = None
-
-        if self.config.network.network_provider == 'neutron':
-            self.neutron_private_net_id = (
-                self.compute_client.networks.find(label=self.private_net)).id
-            self.floating_ip_pool = (
-                self.compute_client.networks.find(
-                    label=self.private_net + '_ext')).id
-        else:
-            if not self.config.compute.auto_assign_floating_ip:
-                flip_list = self.compute_client.floating_ip_pools.list()
-                self.floating_ip_pool = next(
-                    flip.name for flip in flip_list if flip.is_loaded())
-
-    def _try_port(self, host, port):
-        start_time = time.time()
-        delta = time.time() - start_time
-
-        while delta < 600:
-            cmd = ("timeout 60 bash -c 'echo >/dev/"
-                   "tcp/{0}/{1}'; echo $?".format(host, port))
-
-            output, output_err = self._run_ssh_cmd(cmd)
-            print('NC output after %s seconds is "%s"' % (delta, output))
-            LOG.debug('NC output after %s seconds is "%s"',
-                      delta, output)
-
-            if output or str(output_err).find(' succeeded!') > 0:
-                return True
-
-            time.sleep(10)
-            delta = time.time() - start_time
-
-        self.fail('On host %s port %s is not opened '
-                  'more then 10 minutes' % (host, port))
-
     def get_max_free_compute_node_ram(self, min_required_ram_mb):
         max_free_ram_mb = 0
         for hypervisor in self.compute_client.hypervisors.list():
@@ -904,10 +890,143 @@ class PlatformServicesBaseClass(NovaNetworkScenarioTest):
 
         return max_free_ram_mb
 
+    # Methods for creating network resources.
+    def create_network_resources(self):
+        """This method creates network resources.
+
+        It creates a network, an internal subnet on the network, a router and
+        links the network to the router. All resources created by this method
+        will be automatically deleted.
+        """
+
+        private_net_id = None
+        floating_ip_pool = None
+
+        if self.config.network.network_provider == 'neutron':
+            ext_net = self.find_external_network()
+            net_name = data_utils.rand_name('ostf-platform-service-net-')
+            net = self._create_net(net_name)
+            subnet = self._create_internal_subnet(net)
+            router_name = data_utils.rand_name('ostf-platform-service-router-')
+            router = self._create_router(router_name, ext_net)
+            self.neutron_client.add_interface_router(
+                router['id'], {'subnet_id': subnet['id']})
+            self.addCleanup(self.neutron_client.remove_interface_router,
+                            router['id'], {'subnet_id': subnet['id']})
+            self.addCleanup(
+                self.neutron_client.remove_gateway_router, router['id'])
+
+            private_net_id = net['id']
+            floating_ip_pool = ext_net['id']
+        else:
+            if not self.config.compute.auto_assign_floating_ip:
+                fl_ip_pools = self.compute_client.floating_ip_pools.list()
+                floating_ip_pool = next(fl_ip_pool.name
+                                        for fl_ip_pool in fl_ip_pools
+                                        if fl_ip_pool.is_loaded())
+
+        return private_net_id, floating_ip_pool
+
+    def find_external_network(self):
+        """This method finds the external network."""
+
+        LOG.debug('Finding external network...')
+        for net in self.neutron_client.list_networks()['networks']:
+            if net['router:external']:
+                LOG.debug('External network found. Ext net: {0}'.format(net))
+                return net
+
+        self.fail('Cannot find the external network.')
+
+    def _create_net(self, name):
+        """This method creates a network.
+
+        All resources created by this method will be automatically deleted.
+        """
+
+        LOG.debug('Creating network with name "{0}"...'.format(name))
+        net_body = {
+            'network': {
+                'name': name,
+                'tenant_id': self.tenant_id
+            }
+        }
+        net = self.neutron_client.create_network(net_body)['network']
+        self.addCleanup(self.neutron_client.delete_network, net['id'])
+        LOG.debug('Network "{0}" has been created. Net: {1}'.format(name, net))
+
+        return net
+
+    def _create_internal_subnet(self, net):
+        """This method creates an internal subnet on the network.
+
+        All resources created by this method will be automatically deleted.
+        """
+
+        LOG.debug('Creating subnet...')
+        subnet_body = {
+            'subnet': {
+                'network_id': net['id'],
+                'ip_version': 4,
+                'cidr': '10.1.7.0/24',
+                'tenant_id': self.tenant_id
+            }
+        }
+        subnet = self.neutron_client.create_subnet(subnet_body)['subnet']
+        self.addCleanup(self.neutron_client.delete_subnet, subnet['id'])
+        LOG.debug('Subnet has been created. Subnet: {0}'.format(subnet))
+
+        return subnet
+
+    def _create_router(self, name, ext_net):
+        """This method creates a router.
+
+        All resources created by this method will be automatically deleted.
+        """
+
+        LOG.debug('Creating router with name "{0}"...'.format(name))
+        router_body = {
+            'router': {
+                'name': name,
+                'external_gateway_info': {
+                    'network_id': ext_net['id']
+                },
+                'tenant_id': self.tenant_id
+            }
+        }
+        router = self.neutron_client.create_router(router_body)['router']
+        self.addCleanup(self.neutron_client.delete_router, router['id'])
+        LOG.debug('Router "{0}" has been created. '
+                  'Router: {1}'.format(name, router))
+
+        return router
+
+    def get_info_about_available_resources(self, min_ram, min_hdd, min_vcpus):
+        """This function allows to get the information about resources.
+
+        We need to collect the information about available RAM, HDD and vCPUs
+        on all compute nodes for cases when we will create more than 1 VM.
+
+        This function returns the count of VMs with required parameters which
+        we can successfully run on existing cloud.
+        """
+        vms_count = 0
+        for hypervisor in self.compute_client.hypervisors.list():
+            if hypervisor.free_ram_mb >= min_ram:
+                if hypervisor.free_disk_gb >= min_hdd:
+                    if hypervisor.vcpus - hypervisor.vcpus_used >= min_vcpus:
+                        # We need to determine how many VMs we can run
+                        # on this hypervisor
+                        free_cpu = hypervisor.vcpus - hypervisor.vcpus_used
+                        k1 = int(hypervisor.free_ram_mb / min_ram)
+                        k2 = int(hypervisor.free_disk_gb / min_hdd)
+                        k3 = int(free_cpu / min_vcpus)
+                        vms_count += min(k1, k2, k3)
+        return vms_count
+
     # Methods for finding and checking Sahara images.
     def find_and_check_image(self, tag_plugin, tag_version):
-        """This method finds a correctly registered image for Sahara platform
-        tests.
+        """This method finds a correctly registered Sahara image.
 
         It finds a Sahara image by specific tags and checks whether the image
         is correctly registered or not.
@@ -915,13 +1034,14 @@ class PlatformServicesBaseClass(NovaNetworkScenarioTest):
 
         LOG.debug('Finding and checking image for Sahara...')
         image = self._find_image_by_tags(tag_plugin, tag_version)
-        if (image is not None) and (
-            '_sahara_username' in image.metadata) and (
-                image.metadata['_sahara_username'] is not None):
-            self.ssh_username = image.metadata['_sahara_username']
-            LOG.debug('Image with name "{0}" is registered for Sahara with '
-                      'username "{1}".'.format(image.name, self.ssh_username))
-            return image.id
+        if image is not None:
+            self.ssh_username = image.metadata.get('_sahara_username', None)
+            msg = 'Image "{0}" is registered for Sahara with username "{1}".'
+
+            if self.ssh_username is not None:
+                LOG.debug(msg.format(image.name, self.ssh_username))
+                return image.id
+
         LOG.debug('Image is not correctly registered or it is not '
                   'registered at all. Correct image for Sahara not found.')
 
@@ -930,14 +1050,36 @@ class PlatformServicesBaseClass(NovaNetworkScenarioTest):
 
         tag_plug = '_sahara_tag_' + tag_plugin
         tag_ver = '_sahara_tag_' + tag_version
+        msg = 'Image with tags "{0}" and "{1}" found. Image name is "{2}".'
+
         for image in self.compute_client.images.list():
-            if tag_plug in image.metadata and tag_ver in image.metadata:
-                LOG.debug(
-                    'Image with tags "{0}" and "{1}" found. Image name '
-                    'is "{2}".'.format(tag_plugin, tag_version, image.name))
-                return image
+            if image.status.lower() == 'active':
+                if tag_plug in image.metadata and tag_ver in image.metadata:
+                    LOG.debug(msg.format(tag_plugin, tag_version, image.name))
+                    return image
         LOG.debug('Image with tags "{0}" and "{1}" '
                   'not found.'.format(tag_plugin, tag_version))
+
+    # Method for checking whether or not resource is deleted.
+    def is_resource_deleted(self, resource_client, resource_id):
+        """This method checks whether or not the resource is deleted.
+
+        The API request is wrapped in the try/except block to correctly handle
+        the "404 Not Found" exception. If the resource doesn't exist, this
+        method will return True. Otherwise it will return False.
+        """
+
+        try:
+            resource_client.get(resource_id)
+        except Exception as exc:
+            exc_msg = exc.message.lower()
+            if ('not found' in exc_msg) or ('could not be found' in exc_msg):
+                LOG.debug('Resource "{0}" is deleted.'.format(resource_id))
+                return True
+
+            self.fail(exc.message)
+
+        return False
 
 
 class SanityChecksTest(OfficialClientTest):
@@ -1098,6 +1240,7 @@ class SmokeChecksTest(OfficialClientTest):
         name = rand_name('ost1_test-boot-volume-instance')
         base_image_id = self.get_image_from_name()
         bd_map = {'vda': volume.id + ':::0'}
+        az_name = self.get_availability_zone(image_id=base_image_id)
         if 'neutron' in self.config.network.network_provider:
             network = [net.id for net in
                        self.compute_client.networks.list()
@@ -1106,16 +1249,18 @@ class SmokeChecksTest(OfficialClientTest):
                 create_kwargs = {'block_device_mapping': bd_map,
                                  'nics': [{'net-id': network[0]}]}
             else:
-                self.fail("Default private network '{0}' isn't present."
+                self.fail("Default private network '{0}' isn't present. "
                           "Please verify it is properly created.".
                           format(self.private_net))
             server = client.servers.create(
                 name, base_image_id, self.find_micro_flavor()[0].id,
+                availability_zone=az_name,
                 **create_kwargs)
         else:
             create_kwargs = {'block_device_mapping': bd_map}
             server = client.servers.create(name, base_image_id,
                                            self.find_micro_flavor()[0].id,
+                                           availability_zone=az_name,
                                            **create_kwargs)
 
         self.verify_response_body_content(server.name,
@@ -1135,6 +1280,7 @@ class SmokeChecksTest(OfficialClientTest):
         name = rand_name('ost1_test-volume-instance')
 
         base_image_id = self.get_image_from_name(img_name=img_name)
+        az_name = self.get_availability_zone(image_id=base_image_id)
 
         if 'neutron' in self.config.network.network_provider:
             network = [net.id for net in
@@ -1143,15 +1289,17 @@ class SmokeChecksTest(OfficialClientTest):
             if network:
                 create_kwargs = {'nics': [{'net-id': network[0]}]}
             else:
-                self.fail("Default private network '{0}' isn't present."
+                self.fail("Default private network '{0}' isn't present. "
                           "Please verify it is properly created.".
                           format(self.private_net))
             server = client.servers.create(
                 name, base_image_id, self.find_micro_flavor()[0].id,
+                availability_zone=az_name,
                 **create_kwargs)
         else:
             server = client.servers.create(name, base_image_id,
-                                           self.micro_flavors[0].id)
+                                           self.micro_flavors[0].id,
+                                           availability_zone=az_name)
 
         self.verify_response_body_content(server.name,
                                           name,

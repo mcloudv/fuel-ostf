@@ -18,6 +18,8 @@ import paramiko.ssh_exception as exc
 from fuel_health.common.ssh import Client as SSHClient
 from fuel_health import exceptions
 from fuel_health import nmanager
+from keystoneclient.openstack.common.apiclient.exceptions import Unauthorized
+from keystoneclient.v2_0 import Client as keystoneclient
 
 LOG = logging.getLogger(__name__)
 
@@ -34,12 +36,6 @@ class SanityConfigurationTest(nmanager.SanityChecksTest):
     @classmethod
     def setUpClass(cls):
         super(SanityConfigurationTest, cls).setUpClass()
-        cls.controllers = cls.config.compute.online_controllers
-        cls.computes = cls.config.compute.online_computes
-        cls.usr = cls.config.compute.controller_node_ssh_user
-        cls.pwd = cls.config.compute.controller_node_ssh_password
-        cls.key = cls.config.compute.path_to_private_key
-        cls.timeout = cls.config.compute.ssh_timeout
 
     @classmethod
     def tearDownClass(cls):
@@ -56,9 +52,9 @@ class SanityConfigurationTest(nmanager.SanityChecksTest):
         """
 
         ssh_client = SSHClient('localhost',
-                               self.usr,
-                               self.pwd,
-                               timeout=self.timeout)
+                               self.config.master.master_node_ssh_user,
+                               self.config.master.master_node_ssh_password,
+                               timeout=self.config.master.ssh_timeout)
         cmd = "date"
         output = []
         try:
@@ -82,11 +78,11 @@ class SanityConfigurationTest(nmanager.SanityChecksTest):
                                   'ssh on master node were not changed')
 
     def test_002_check_default_openstack_credential_usage(self):
-        """Check usage of default credentials for Openstack cluster
+        """Check if default credentials for OpenStack cluster have changed
         Target component: Configuration
 
         Scenario:
-            1. Check default credentials for Openstack cluster are changed.
+            1. Check if default credentials for OpenStack cluster have changed.
         Duration: 20 s.
          Available since release: 2014.2-6.1
         """
@@ -99,6 +95,32 @@ class SanityConfigurationTest(nmanager.SanityChecksTest):
             self.verify_response_body_not_equal(
                 exp_content='admin',
                 act_content=cluster_data[key],
-                msg='Default credentials value for {0} is using. '
-                'We kindly recommend to change all defaults'.format(key),
+                msg='Default credentials values are used. '
+                'We kindly recommend that you changed all defaults.',
                 failed_step='1')
+
+    def test_003_check_default_keystone_credential_usage(self):
+            """Check usage of default credentials for keystone on master node
+            Target component: Configuration
+
+            Scenario:
+                1. Check default credentials for keystone on master node are
+                 changed.
+            Duration: 20 s.
+             Available since release: 2015.1.0-7.0
+            """
+
+            usr = self.config.master.keystone_user
+            pwd = self.config.master.keystone_password
+            url = 'http://{0}:5000/v2.0'.format(self.config.nailgun_host)
+
+            try:
+                keystone = keystoneclient(username=usr,
+                                          password=pwd,
+                                          auth_url=url)
+                keystone.authenticate()
+            except Unauthorized:
+                pass
+            else:
+                self.fail('Step 1 failed: Default credentials '
+                          'for keystone on master node were not changed')

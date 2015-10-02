@@ -83,6 +83,11 @@ class TestImageAction(nmanager.SmokeChecksTest):
                       "something is wrong with nova services.")
         else:
             flavor_id = self.micro_flavors[0]
+        disk = self.glance_client_v1.images.get(image_id).disk_format
+        if disk == 'vmdk':
+            az_name = 'vcenter'
+        else:
+            az_name = 'nova'
         name = rand_name('ost1_test-image')
         client = self.compute_client
         LOG.debug("name:%s, image:%s" % (name, image_id))
@@ -97,16 +102,19 @@ class TestImageAction(nmanager.SmokeChecksTest):
                     ],
                 }
             else:
-                self.fail("Default private network '{0}' isn't present."
+                self.fail("Default private network '{0}' isn't present. "
                           "Please verify it is properly created.".
                           format(self.private_net))
             server = client.servers.create(name=name,
                                            image=image_id,
-                                           flavor=flavor_id, **create_kwargs)
+                                           flavor=flavor_id,
+                                           availability_zone=az_name,
+                                           **create_kwargs)
         else:
             server = client.servers.create(name=name,
                                            image=image_id,
-                                           flavor=flavor_id)
+                                           flavor=flavor_id,
+                                           availability_zone=az_name)
         self.set_resource(name, server)
         self.verify_response_body_content(
             name, server.name,

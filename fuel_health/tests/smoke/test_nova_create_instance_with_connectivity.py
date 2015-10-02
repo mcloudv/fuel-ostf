@@ -304,6 +304,7 @@ class TestNovaNetwork(nmanager.NovaNetworkScenarioTest):
             5. Delete floating ip.
             6. Delete instance.
         Duration: 200 s.
+        Deployment tags: enable_without_ceph
         Available since release: 2014.2-6.1
         """
         self.check_image_exists()
@@ -349,7 +350,7 @@ class TestNovaNetwork(nmanager.NovaNetworkScenarioTest):
             600, self._run_command_from_vm,
             4, "Can not find injected file on instance.",
             'check if injected file exists', ip_address,
-            30, (9, 60),
+            30, (9, 30),
             '[ -f /home/cirros/server.txt ] && echo "True" || echo "False"')
 
         self.verify(20, self.compute_client.servers.remove_floating_ip,
