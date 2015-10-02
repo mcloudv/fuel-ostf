@@ -95,7 +95,7 @@ class NTPTest(cloudvalidation.CloudValidationTest):
 
         Duration: 15 s.
 
-        Available since release: 2015.1.0-7.0
+        Available since release: 2015.1.0-8.0
         """
 
         for host in self.controllers:
