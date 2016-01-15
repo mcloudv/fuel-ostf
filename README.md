@@ -1,6 +1,9 @@
 fuel-ostf-tests
 ===============
 
+** WARNING
+** This repository is deprecated.
+
 In order to start tests you will need to perform next commands:
     fab unit
     fab testall
