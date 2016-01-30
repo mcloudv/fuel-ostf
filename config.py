@@ -40,8 +40,7 @@ IdentityGroup = [
                default='identity',
                help="Catalog type of the Identity service."),
     cfg.BoolOpt('disable_ssl_certificate_validation',
-                default=False,
-                help="Set to True if using self-signed SSL certificates."),
+                default=False),
     cfg.StrOpt('uri',
                default='http://localhost/',
                help="Full URI of the OpenStack Identity API (Keystone), v2"),
@@ -415,8 +414,9 @@ FuelConf = [
                default=None,
                help="dns"),
     cfg.BoolOpt('horizon_ssl',
-                default=False,
-                help='ssl usage')
+                default=False),
+    cfg.BoolOpt('ssl_data',
+        default=False)
 ]
 
 
@@ -635,6 +635,7 @@ class NailgunConfig(object):
         ssl_data = data['editable'].get('public_ssl',
                                         {'horizon': {'value': False}})
 
+        self.fuel.ssl_data = ssl_data['services']['value']
         self.fuel.horizon_ssl = ssl_data['horizon']['value']
 
     def _parse_nodes_cluster_id(self):
@@ -748,11 +749,11 @@ class NailgunConfig(object):
             self.volume.cinder_vmware_storage_az = "{0}-cinder".format(az)
 
     def find_proxy(self, ip):
-
+        #@TODO: ALARAM!
         if 'service_endpoint' in self.network.raw_data:
             keystone_vip = self.network.raw_data['service_endpoint']
         else:
-            keystone_vip = self.network.raw_data.get('management_vip', None)
+            keystone_vip = self.network.raw_data.get('public_vip', None)
 
         auth_url = 'http://{0}:{1}/{2}/'.format(keystone_vip, 5000, 'v2.0')
 
@@ -795,7 +796,7 @@ class NailgunConfig(object):
             management_vip = self.network.raw_data.get('management_vip', None)
         else:
             management_vip = self.network.raw_data.get('management_vip', None)
-            keystone_vip = management_vip
+            keystone_vip = self.network.raw_data.get('public_vip', None)
         public_vip = self.network.raw_data.get('public_vip', None)
         # workaround for api without management_vip for ha mode
         if not keystone_vip and 'ha' in self.mode:
