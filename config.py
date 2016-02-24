@@ -15,6 +15,7 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+
 from __future__ import print_function
 
 import os
@@ -40,7 +41,7 @@ IdentityGroup = [
                default='identity',
                help="Catalog type of the Identity service."),
     cfg.BoolOpt('disable_ssl_certificate_validation',
-                default=False),
+                default=True),
     cfg.StrOpt('uri',
                default='http://localhost/',
                help="Full URI of the OpenStack Identity API (Keystone), v2"),
@@ -749,7 +750,6 @@ class NailgunConfig(object):
             self.volume.cinder_vmware_storage_az = "{0}-cinder".format(az)
 
     def find_proxy(self, ip):
-        #@TODO: ALARAM!
         if 'service_endpoint' in self.network.raw_data:
             keystone_vip = self.network.raw_data['service_endpoint']
         else:
@@ -765,7 +765,7 @@ class NailgunConfig(object):
                 password=self.identity.admin_password,
                 tenant_name=self.identity.admin_tenant_name,
                 auth_url=auth_url,
-                insecure=False,
+                insecure=True,
                 timeout=10)
             return ip
         except Exception:

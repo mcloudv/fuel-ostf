@@ -171,7 +171,8 @@ class OfficialClientManager(fuel_health.manager.Manager):
             LOG.warning('Can not initialize glance client')
             return None
         return glanceclient.client.Client(version, endpoint=endpoint,
-                                          token=keystone.auth_token)
+                                          token=keystone.auth_token,
+                                          insecure=True)
 
     def _get_volume_client(self, username=None, password=None,
                            tenant_name=None):
@@ -188,7 +189,8 @@ class OfficialClientManager(fuel_health.manager.Manager):
                                           password,
                                           tenant_name,
                                           auth_url,
-                                          endpoint_type='publicURL')
+                                          endpoint_type='publicURL',
+                                          insecure=True)
 
     def _get_identity_client(self, username=None, password=None,
                              tenant_name=None, version=None):
@@ -209,7 +211,6 @@ class OfficialClientManager(fuel_health.manager.Manager):
             raise exceptions.InvalidConfiguration(msg)
 
         auth_url = self.config.identity.uri
-        dscv = self.config.identity.disable_ssl_certificate_validation
 
         if not version or version == 2:
             return keystoneclient.v2_0.client.Client(username=username,
@@ -267,7 +268,7 @@ class OfficialClientManager(fuel_health.manager.Manager):
             return muranoclient.v1.client.Client(
                 endpoint=self.config.murano.api_url,
                 token=self.token_id,
-                insecure=self.config.murano.insecure,
+                insecure=True,
                 endpoint_type='publicURL')
         except exceptions:
             LOG.debug(traceback.format_exc())
@@ -288,7 +289,8 @@ class OfficialClientManager(fuel_health.manager.Manager):
 
         return saharaclient.client.Client(sahara_api_version,
                                           sahara_url=sahara_url,
-                                          input_auth_token=auth_token)
+                                          input_auth_token=auth_token,
+                                          insecure=True)
 
     def _get_ceilometer_client(self):
         keystone = self._get_identity_client()
@@ -301,7 +303,8 @@ class OfficialClientManager(fuel_health.manager.Manager):
             return None
 
         return ceilometerclient.v2.Client(endpoint=endpoint,
-                                          token=lambda: keystone.auth_token)
+                                          token=lambda: keystone.auth_token,
+                                          insecure=True)
 
     def _get_neutron_client(self, version='2.0'):
         keystone = self._get_identity_client()
@@ -316,7 +319,8 @@ class OfficialClientManager(fuel_health.manager.Manager):
 
         return neutronclient.neutron.client.Client(version,
                                                    token=keystone.auth_token,
-                                                   endpoint_url=endpoint)
+                                                   endpoint_url=endpoint,
+                                                   insecure=True)
 
 
 class OfficialClientTest(fuel_health.test.TestCase):
